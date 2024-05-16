@@ -10,18 +10,11 @@ import PIL
 
 # Local Modules
 import settings
-from settings import MODEL_DIR
-
 
 # Define the paths
-# Define the paths using settings.py
 CHECKPOINT_PATH = settings.CHECKPOINT_PATH
 CONFIG_FILE_PATH = settings.CONFIG_FILE_PATH
 TRAIN_DATA_SET_NAME = settings.TRAIN_DATA_SET_NAME
-DETECTION_MODEL = settings.DETECTION_MODEL
-
-
-
 
 cfg = get_cfg()
 cfg.merge_from_file(CONFIG_FILE_PATH)
@@ -52,15 +45,33 @@ def infer_image(image, predictor):
     outputs = predictor(image)
     v = Visualizer(image[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=0.8)
     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-    return out.get_image()[:, :, ::-1]
+    return out.get_image()[:, :, ::-1], outputs
+
+def calculate_pixel_counts(outputs, category_names):
+    instances = outputs["instances"].to("cpu")
+    total_pixels = 0
+    category_pixel_counts = {category: 0 for category in category_names}
+
+    for i in range(len(instances)):
+        pred_class = instances.pred_classes[i].item()
+        mask = instances.pred_masks[i].numpy()
+        mask_pixels = np.sum(mask)
+        total_pixels += mask_pixels
+        category_name = category_names[pred_class]
+        category_pixel_counts[category_name] += mask_pixels
+
+    return total_pixels, category_pixel_counts
+
+def generate_summary(outputs, category_names):
+    total_pixels, category_pixel_counts = calculate_pixel_counts(outputs, category_names)
+    percentages = {cat: (count / total_pixels) * 100 for cat, count in category_pixel_counts.items() if count > 0}
+    return total_pixels, category_pixel_counts, percentages
 
 def main():
-    # Subtitle in bold
-
     # Centered title with red color
     st.markdown(
-    '<p style="text-align:center; color:red; font-size:30px;">Capstone Project</p>',
-    unsafe_allow_html=True
+        '<p style="text-align:center; color:red; font-size:30px;">Capstone Project</p>',
+        unsafe_allow_html=True
     )
     st.markdown(
         '<p style="text-align:center; font-size:35px; font-weight:bold;">Instance Segmentation using Mask R-CNN</p>',
@@ -77,17 +88,11 @@ def main():
     confidence = float(st.sidebar.slider(
         "Select Model Confidence", 25, 100, 40)) / 100
 
-    # Selecting Detection Or Segmentation
-    if model_type == 'Detection':
-        model_path = Path(settings.DETECTION_MODEL)
-    elif model_type == 'Segmentation':
-        model_path = Path(settings.SEGMENTATION_MODEL)
-
     # Load Pre-trained ML Model
     try:
         model = load_model()
     except Exception as ex:
-        st.error(f"Unable to load model. Check the specified path: {model_path}")
+        st.error(f"Unable to load model. Check the specified path: {CHECKPOINT_PATH}")
         st.error(ex)
 
     st.sidebar.header("Image Config")
@@ -127,9 +132,27 @@ def main():
                 if st.sidebar.button('Detect Waste'):
                     try:
                         predictor = load_model()
-                        output_image = infer_image(np.array(uploaded_image), predictor)
+                        output_image, outputs = infer_image(np.array(uploaded_image), predictor)
                         st.image(output_image, caption='Detected Image',
                                  use_column_width=True)
+
+                        total_pixels, category_pixel_counts, percentages = generate_summary(outputs, [cat["name"] for cat in categories])
+
+                        st.write(f"Total Pixels: {total_pixels}")
+                        st.write("Category Pixel Counts:")
+                        st.write({cat: count for cat, count in category_pixel_counts.items() if count > 0})
+                        st.write("Percentages:")
+                        st.write({cat: perc for cat, perc in percentages.items() if perc > 0})
+
+                        with st.expander("Detection Results"):
+                            instances = outputs["instances"].to("cpu")
+                            for i in range(len(instances)):
+                                box = instances.pred_boxes[i].tensor.numpy()[0]
+                                area = instances.pred_masks[i].sum()
+                                st.write(f"Box: {box}")
+                                st.write(f"Area: {area} pixels")
+                                
+                        st.balloons()
                     except Exception as ex:
                         st.error("Error occurred during prediction.")
                         st.error(ex)
