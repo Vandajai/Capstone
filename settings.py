@@ -16,7 +16,7 @@ DEFAULT_IMAGE = IMAGES_DIR / 'Waste_bin.jpg'
 DEFAULT_DETECT_IMAGE = IMAGES_DIR / 'Waste_detected.jpg'
 
 # Define relative paths for model files
-MODEL_DIR = ROOT / 'detectron2' 
+MODEL_DIR = ROOT / 'detectron2' / 'detectron2' 
 CHECKPOINT_PATH = MODEL_DIR / 'model_final_1080.pth'
 CONFIG_FILE_PATH = MODEL_DIR / 'config_1080.yaml'
 TRAIN_DATA_SET_NAME = MODEL_DIR / 'annotations.coco.json'
