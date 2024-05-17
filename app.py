@@ -1,6 +1,6 @@
 import streamlit as st
-import cv2
 import numpy as np
+import pandas as pd
 from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
 from detectron2.utils.visualizer import Visualizer
@@ -47,28 +47,33 @@ def infer_image(image, predictor):
     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
     return out.get_image()[:, :, ::-1], outputs
 
-def calculate_pixel_counts(outputs, category_names):
+def calculate_percentages_and_areas(outputs, category_names, pixel_to_cm):
     instances = outputs["instances"].to("cpu")
-    total_pixels = 0
+    total_pixels = sum(instances.pred_masks.numpy().sum(axis=(1, 2)))
     category_pixel_counts = {category: 0 for category in category_names}
+    category_areas_cm2 = {category: 0 for category in category_names}
 
     for i in range(len(instances)):
         pred_class = instances.pred_classes[i].item()
         mask = instances.pred_masks[i].numpy()
         mask_pixels = np.sum(mask)
-        total_pixels += mask_pixels
         category_name = category_names[pred_class]
         category_pixel_counts[category_name] += mask_pixels
 
-    return total_pixels, category_pixel_counts
+        # Calculate area in cm²
+        category_areas_cm2[category_name] += mask_pixels * (pixel_to_cm ** 2)
 
-def generate_summary(outputs, category_names):
-    total_pixels, category_pixel_counts = calculate_pixel_counts(outputs, category_names)
-    percentages = {cat: (count / total_pixels) * 100 for cat, count in category_pixel_counts.items() if count > 0}
-    return total_pixels, category_pixel_counts, percentages
+    # Calculate percentages relative to the "Garbage" area
+    garbage_area = category_pixel_counts["Garbage"]
+    percentages = {cat: (count / garbage_area) * 100 for cat, count in category_pixel_counts.items() if count > 0}
+    areas_cm2 = {cat: area for cat, area in category_areas_cm2.items() if area > 0}
+
+    # Round percentages and append '%'
+    percentages = {cat: f"{round(perc)}%" for cat, perc in percentages.items()}
+
+    return percentages, areas_cm2
 
 def main():
-    # Centered title with red color
     st.markdown(
         '<p style="text-align:center; color:red; font-size:30px;">Capstone Project</p>',
         unsafe_allow_html=True
@@ -78,17 +83,14 @@ def main():
         unsafe_allow_html=True
     )
 
-    # Sidebar
     st.sidebar.header("ML Model Config")
 
-    # Model Options
-    model_type = st.sidebar.radio(
+    # Model Options: Detection or Segmentation
+    model_type = st.sidebar.selectbox(
         "Select Task", ['Detection', 'Segmentation'])
 
-    confidence = float(st.sidebar.slider(
-        "Select Model Confidence", 25, 100, 40)) / 100
+    confidence = float(st.sidebar.slider("Select Model Confidence", 25, 100, 40)) / 100
 
-    # Load Pre-trained ML Model
     try:
         model = load_model()
     except Exception as ex:
@@ -96,13 +98,10 @@ def main():
         st.error(ex)
 
     st.sidebar.header("Image Config")
-    source_radio = st.sidebar.radio(
-        "Select Source", settings.SOURCES_LIST)
+    source_radio = st.sidebar.radio("Select Source", settings.SOURCES_LIST)
 
-    source_img = None
     if source_radio == settings.IMAGE:
-        source_img = st.sidebar.file_uploader(
-            "Choose an image...", type=("jpg", "jpeg", "png"))
+        source_img = st.sidebar.file_uploader("Choose an image...", type=("jpg", "jpeg", "png"))
 
         col1, col2 = st.columns(2)
 
@@ -110,13 +109,10 @@ def main():
             try:
                 if source_img is None:
                     default_image_path = str(settings.DEFAULT_IMAGE)
-                    default_image = PIL.Image.open(default_image_path)
-                    st.image(default_image_path, caption="Default Image",
-                             use_column_width=True)
+                    st.image(default_image_path, caption="Default Image", use_column_width=True)
                 else:
                     uploaded_image = PIL.Image.open(source_img)
-                    st.image(source_img, caption="Uploaded Image",
-                             use_column_width=True)
+                    st.image(source_img, caption="Uploaded Image", use_column_width=True)
             except Exception as ex:
                 st.error("Error occurred while opening the image.")
                 st.error(ex)
@@ -124,34 +120,28 @@ def main():
         with col2:
             if source_img is None:
                 default_detected_image_path = str(settings.DEFAULT_DETECT_IMAGE)
-                default_detected_image = PIL.Image.open(
-                    default_detected_image_path)
-                st.image(default_detected_image_path, caption='Detected Image',
-                         use_column_width=True)
+                st.image(default_detected_image_path, caption='Detected Image', use_column_width=True)
             else:
                 if st.sidebar.button('Detect Waste'):
                     try:
                         predictor = load_model()
                         output_image, outputs = infer_image(np.array(uploaded_image), predictor)
-                        st.image(output_image, caption='Detected Image',
-                                 use_column_width=True)
+                        st.image(output_image, caption='Detected Image', use_column_width=True)
 
-                        total_pixels, category_pixel_counts, percentages = generate_summary(outputs, [cat["name"] for cat in categories])
+                        pixel_to_cm = 0.026  # Example conversion factor, adjust as needed
+                        percentages, areas_cm2 = calculate_percentages_and_areas(outputs, [cat["name"] for cat in categories], pixel_to_cm)
 
-                        st.write(f"Total Pixels: {total_pixels}")
-                        st.write("Category Pixel Counts:")
-                        st.write({cat: count for cat, count in category_pixel_counts.items() if count > 0})
-                        st.write("Percentages:")
-                        st.write({cat: perc for cat, perc in percentages.items() if perc > 0})
+                        data = {
+                            "Category": list(percentages.keys()),
+                            "Percentage (%)": list(percentages.values()),
+                            "Area (cm²)": [areas_cm2[cat] for cat in percentages.keys()]
+                        }
+
+                        df = pd.DataFrame(data)
 
                         with st.expander("Detection Results"):
-                            instances = outputs["instances"].to("cpu")
-                            for i in range(len(instances)):
-                                box = instances.pred_boxes[i].tensor.numpy()[0]
-                                area = instances.pred_masks[i].sum()
-                                st.write(f"Box: {box}")
-                                st.write(f"Area: {area} pixels")
-                                
+                            st.table(df.sort_values(by='Category', key=lambda col: col.str.lower() != 'garbage'))
+
                         st.balloons()
                     except Exception as ex:
                         st.error("Error occurred during prediction.")
